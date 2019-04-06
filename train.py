@@ -75,6 +75,11 @@ def build_tensorboard():
     logger = lg.Logger(config.log_path)
 
 
+def save_sample(data_iter):
+    real_images, _ = next(data_iter)
+    save_image(denorm(real_images), os.path.join(config.sample_path, 'real.png'))
+
+
 if __name__ == "__main__":
     config = get_parameters()
     print(config)
@@ -86,6 +91,12 @@ if __name__ == "__main__":
 
     if config.tensorboard():
         build_tensorboard()
+
+    # Data iterator
+    #data_iter = iter(data_loader)
+    #step_per_epoch = len(data_loader)
+    #model_save_step = int(config.model_save_step * step_per_epoch)
+
 
     # Start with trained model
     if config.pretrained_model:
@@ -110,4 +121,28 @@ if __name__ == "__main__":
     if config.parallel:
         G_net = nn.DataParallel(G_net)
         D_net = nn.DataParallel(D_net)
-        
+
+    # Loss and Optimizer
+    g_optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, G_net.parameters()), config.g_lr, [config.beta1, config.beta2])
+    d_optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, D_net.parameters()), config.d_lr, [config.beta1, config.beta2])
+
+    c_loss = torch.nn.CrossEntropyLoss()
+
+    # print networks
+    print(G_net)
+    print(D_net)
+
+    # Training
+    for step in range(start, config.total_step):
+        # Train Discriminator
+        D_net.train()
+        G_net.train()
+
+        try:
+            real_images, _ = next(data_iter)
+        except:
+            data_iter = iter(data_loader)
+            real_images, _ = next(data_iter)
+
+        # Compute loss with real images
+        # 
