@@ -6,6 +6,7 @@ import datetime
 import torch.nn as nn
 from torch.autograd import Variable
 from torchvision.utils import save_image
+import torch.autograd as autograd
 
 from sagan import Generator, Discriminator
 from utils import *
@@ -80,6 +81,34 @@ def save_sample(data_iter):
     save_image(denorm(real_images), os.path.join(config.sample_path, 'real.png'))
 
 
+def reset_grad(D, G):
+    D.optimizer.zero_grad()
+    G.optimizer.zero_grad()
+
+
+def compute_gradient_penalty(D, real_samples, fake_samples):
+    # Calculates gradient penalty loss for WGAN GP
+    Tensor = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
+    # Random weight term for interpolation between real and fake samples
+    alpha = Tensor(np.random.random((real_samples.size(0), 1, 1, 1)))
+    # Get random interpolation between real and fake samples
+    interpolates = (alpha * real_samples + ((1 - alpha) * fake_samples)).requires_grad_(True)
+    d_interpolates = D(interpolates)
+    fake = Variable(Tensor(real_samples.shape[0], 1).fill_(1.0), requires_grad=False)
+    # Get gradient w.r.t interpolates
+    gradients = autograd.grad(
+        outputs=d_interpolates,
+        inputs=interpolates,
+        grad_outputs=fake,
+        create_graph=True,
+        retain_graph=True,
+        only_inputs=True,
+    )[0]
+    gradients = gradients.view(gradients.size(0), -1)
+    gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
+    return gradient_penalty
+
+
 if __name__ == "__main__":
     config = get_parameters()
     print(config)
@@ -145,4 +174,29 @@ if __name__ == "__main__":
             real_images, _ = next(data_iter)
 
         # Compute loss with real images
-        # 
+        # dr1, dr2m df1, df2, gf1, gf2 are attention scores
+        real_images = tensor2var(real_images)
+        d_out_real, dr1, dr2 = D_net(real_images)
+        if config.adv_loss == 'wgan-gp':
+            d_loss_real = - torch.mean(d_out_real)
+        elif config.adv_loss == 'hinge':
+            d_loss_real = torch.nn.ReLU()(1.0 - d_out_real).mean()
+        # Apply gumbel softmax
+        z = tensor2var(torch.rand(real_images.size(0), config.z_dim))
+        fake_images, gf1, gf2 = G_net(z)
+        d_out_fake, df1, df2 = D_net(fake_images)
+
+        if config.adv_loss == 'wgan-gp':
+            d_loss_fake = d_out_fake.mean()
+        elif config.adv_loss == 'hinge':
+            d_loss_fake = torch.nn.ReLU()(1.0 + d_out_fake).mean()
+
+        # backward + Optimize
+        d_loss = d_loss_real + d_loss_fake
+        if config.adv_loss == 'wgan-gp':
+            d_loss_gp = compute_gradient_penalty(real_images, real_labels, fake_images)
+            d_loss += config.lambda_gp + d_loss_gp
+
+        reset_grad(D_net, G_net)
+        d_loss.backward()
+        d_optimizer.step()
