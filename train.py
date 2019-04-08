@@ -46,10 +46,18 @@ def get_parameters():
     parser.add_argument('--beta1', type=float, default=0.0)
     parser.add_argument('--beta2', type=float, default=0.9)
 
+    # Instance noise
+    # https://github.com/soumith/ganhacks/issues/14#issuecomment-312509518
+    parser.add_argument('--inst_noise_sigma', type=float, default=0.1)
+    parser.add_argument('--inst_noise_sigma_iters', type=int, default=200)
+
     # Using pre trained
     parser.add_argument('--pretrained_model', type=int, default=None)
+    parser.add_argument('--state_dict_or_model', type=str, default=None,
+                        help='Specify whether .pth pretrained model is a state_dict or a complete model')
 
     # Misc
+    parser.add_argument('--manual_seed', type=int, default=29)
     parser.add_argument('--train', type=str2bool, default=True)
     parser.add_argument('--parallel', type=str2bool, default=False)
     parser.add_argument('--dataset', type=str, default='cifar',
@@ -62,6 +70,8 @@ def get_parameters():
     parser.add_argument('--model_save_path', type=str, default='./models')
     parser.add_argument('--sample_path', type=str, default='./samples')
     parser.add_argument('--attn_path', type=str, default='./attn')
+    parser.add_argument('--model_weights_dir', type=str, default='weights')
+    parser.add_argument('--sample_images_dir', type=str, default='samples')
 
     # Step Size
     parser.add_argument('--log_step', type=int, default=10)
@@ -86,15 +96,20 @@ def reset_grad(D, G):
     G.optimizer.zero_grad()
 
 
-def compute_gradient_penalty(D, real_samples, fake_samples):
+def compute_gradient_penalty(D_net, real_samples, real_labels, fake_samples):
     # Calculates gradient penalty loss for WGAN GP
-    Tensor = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
     # Random weight term for interpolation between real and fake samples
-    alpha = Tensor(np.random.random((real_samples.size(0), 1, 1, 1)))
+    if torch.cuda.is_available():
+        alpha = torch.rand(real_samples.size(0), 1, 1, 1).expand_as(real_samples).cuda()
+    else:
+        alpha = torch.rand(real_samples.size(0), 1, 1, 1).expand_as(real_samples)
     # Get random interpolation between real and fake samples
-    interpolates = (alpha * real_samples + ((1 - alpha) * fake_samples)).requires_grad_(True)
-    d_interpolates = D(interpolates)
-    fake = Variable(Tensor(real_samples.shape[0], 1).fill_(1.0), requires_grad=False)
+    interpolates = torch.tensor(alpha * real_samples + (1 - alpha) * fake_samples, requires_grad=True)
+    d_interpolates = D_net(interpolates)
+    if torch.cuda.is_available():
+        fake = torch.ones(d_interpolates.size()).cuda()
+    else:
+        fake = torch.ones(d_interpolates.size())
     # Get gradient w.r.t interpolates
     gradients = autograd.grad(
         outputs=d_interpolates,
@@ -107,6 +122,7 @@ def compute_gradient_penalty(D, real_samples, fake_samples):
     gradients = gradients.view(gradients.size(0), -1)
     gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
     return gradient_penalty
+
 
 
 if __name__ == "__main__":
