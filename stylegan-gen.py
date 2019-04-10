@@ -312,3 +312,118 @@ class InputBlock(nn.Module):
         x = self.conv(x)
         x = self.epi2(x, dlatents_in_range[:, 1])
         return x
+
+
+class GSynthesisBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, blur_filter, dlatent_size,
+                 gain, use_wscale, use_noise, use_pixel_norm,
+                 use_instance_norm, use_styles, activation_layer):
+        # 2 ** res x 2 ** res # res = 3..resolution_log2
+        super(GSynthesisBlock, self).__init__()
+        if blur_filter:
+            blur = BlurLayer(blur_filter)
+        else:
+            blur = None
+        self.conv0_up = Conv2dLayer(in_channels, out_channels, kernel_size=3,
+                                    gain=gain, use_wscale=use_wscale,
+                                    intermediate=blur, upscale=True)
+        self.epi1 = LayerEpilogue(out_channels, dlatent_size, use_wscale,
+                                  use_noise, use_pixel_norm,
+                                  use_instance_norm, use_styles, activation_layer)
+        self.conv1 = Conv2dLayer(out_channels, out_channels, kernel_size=3,
+                                 gain=gain, use_wscale=use_wscale)
+        self.epi2 = LayerEpilogue(out_channels, dlatent_size, use_wscale,
+                                  use_noise, use_pixel_norm, use_instance_norm,
+                                  use_styles, activation_layer)
+
+    def forward(self, x, dlatents_in_range):
+        x = self.conv0_up(x)
+        x = self.epi1(x, dlatents_in_range[:, 0])
+        x = self.conv1(x)
+        x = self.epi2(x, dlatents_in_range[:, 1])
+        return x
+
+
+# Generator - Synthesis Part
+# the Synthesis part stacks 9 blocks (input + 8 resolution doubling)
+# and a pixelwise (1 x 1) conv from 16 channels to RGB ( 3 channels)
+# Lower RGB convs serve no purpose in the final model.
+# reference implementation is setup in recursive mode but it provides
+# a single static graph for all stages of the progressive training
+# Implementing full training in PyTorch would be nice (dynamic graph)
+
+class G_synthesis(nn.Module):
+    def __init__(self, dlatent_size=512, num_channels=3, resolution=1024,
+                 fmap_base=8192, fmap_decay=1.0, fmap_max=512,
+                 use_styles=True, const_input_layer=True,
+                 use_noise=True, randomize_noise=True,
+                 nonlinearity='lrelu', use_wscale=True,
+                 use_pixel_norm=False, use_instance_norm=True,
+                 dtype=torch.float32, blur_filter=[1, 2, 1]):
+        """
+        Params:
+            dlatent_size - Disentangled latent (W) dimensionality
+            num_channels - number of output color channels
+            resolution - output resolution
+            fmap_base - overall multiplier for the number of feature maps
+            fmap_decay - log2 feature map reduction when doubling the resolution
+            fmap_max - maximum number of feature maps in any layer
+            use_styles - Enable style inputs
+            const_input_layer - First layer is a learned constant
+            use_noise - Enable noise inputs
+            randomize_noise - True = randomize noise inputs eevery time (non-deterministic)
+                              False = read noise inputs from variables.
+            nonlinearity - Activation function: 'relu', 'lrelu'
+            use_wscale - Enable equalized learning rate
+            use_pixel_norm - Enable pixelwise feature vector normalization
+            use_instance_norm - Enable instance normalization
+            dtype - Data type to use for activation and outputs
+            blur_filter - Low pass filter to apply when resampling activation
+
+        """
+        super(G_synthesis, self).__init__()
+
+        def nf(stage):
+            return min(int(fmap_base / (2.0 ** (stage * fmap_decay))), fmap_max)
+        self.dlatent_size = dlatent_size
+        resolution_log2 = int(np.log2(resolution))
+        assert resolution == 2**resolution_log2 and resolution >= 4
+
+        act, gain = {'relu': (torch.relu, np.sqrt(2)),
+                     'lrelu': (nn.LeakyReLU(negative_slope=0.2), np.sqrt(2))}[nonlinearity]
+        num_layers = resolution_log2 * 2 - 2
+        num_styles = num_layers if use_styles else 1
+        torgbs = []
+        blocks = []
+        for res in range(2, resolution_log2 + 1):
+            channels = nf(res-1)
+            name = '{s}x{s}'.format(s=2**res)
+            if res == 2:
+                blocks.append((name,
+                               InputBlock(channels, dlatent_size, const_input_layer,
+                                    use_noise, use_pixel_norm, use_instance_norm,
+                                    use_styles, act)))
+            else:
+                blocks.append((name,
+                               GSynthesisBlock(last_channels, channels, blur_filter,
+                                    dlatent_size, gain, use_wscale, use_noise,
+                                    use_pixel_norm, use_instance_norm, use_styles, act)))
+            last_channels = channels
+        self.torgb = Conv2dLayer(channels, num_channels, 1, gain=1, use_wscale=use_wscale)
+        self.blocks = nn.ModuleDict(OrderedDict(blocks))
+
+    def forward(self, dlatents_in):
+        # Input: Disentangled latents (W) [minibatch, num_layers, dlatent_size]
+        # lod_in = tf.cast(tf.get_variable('lod', initializer=np.float32(0), trainable=False), dtype)
+        batch_size = dlatents_in.size(0)
+        for i, m in enumerate(self.blocks.values()):
+            if i == 0:
+                x = m(dlatents_in[:, 2*i:2*i+2])
+            else:
+                x = m(x, dlatents_in[:, 2*i:2*i+2])
+        rgb = self.torgb(x)
+        return rgb
+
+
+def main():
+    # Define the model
