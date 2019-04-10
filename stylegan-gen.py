@@ -161,3 +161,154 @@ class StyleModLayer(nn.Module):
         style = style.view(shape)  # [batch_size, 2, n_channels, ...]
         x = x * (style[:, 0] + 1.) + style[:, 1]
         return x
+
+
+# Pixelnorm
+# Normalizes per pixel across all channels
+# Since default config uses the pixel norm in the g_mapping it forces
+# the empirical st dev of the latent vector to 1
+
+class PixelNormLayer(nn.Module):
+    def __init__(self, epsilon=1e-8):
+        super(PixelNormLayer, self).__init__()
+        self.epsilon = epsilon
+
+    def forward(self, x):
+        return x * torch.rsqrt(torch.mean(x**2, dim=1, keepdim=True) + self.epsilon)
+
+
+# Upscale and blur Layers
+# StyleGAN has two types of upscaling
+# Regular one is a setting a block of 2x2 pixels to the value of the pixel
+# to arrive an image that is scaled by 2
+# Atlernative way is fused with convolution uses a stride 2 tranposed conv
+# The generator blurs the layer by convolving with the simplest smoothing kernel
+
+class BlurLayer(nn.Module):
+    def __init__(self, kernel=[1, 2, 1], normalize=True, flip=False, stride=1):
+        super(BlurLayer, self).__init__()
+        kernel = [1, 2, 1]
+        kernel = torch.tensor(kernel, dtype=torch.float32)
+        kernel = kernel[:, None] * kernel[None, :]
+        kernel = kernel[None, None]
+        if normalize:
+            kernel = kernel / kernel.sum()
+        if flip:
+            kernel = kernel[:, :, ::-1, ::-1]
+        self.register_buffer('kernel', kernel)
+        self.stride = stride
+
+    def forward(self, x):
+        # expand kernel channels
+        kernel = self.kernel.expand(x.size(1), -1, -1, -1)
+        x = F.conv2d(
+            x,
+            kernel,
+            stride=self.stride,
+            padding=int((self.kernel.size(2) - 1)/2),
+        )
+        return x
+
+
+def upscale2d(x, factor=2, gain=1):
+    assert x.dim() == 4
+    if gain != 1:
+        x = x * gain
+    if factor != 1:
+        shape = x.shape
+        x = x.view(shape[0], shape[1], shape[2], 1, shape[3], 1).expand(-1, -1, -1, factor, -1, factor)
+        x = x.contiguous().view(shape[0], shape[1], factor * shape[2], factor * shape[3])
+    return x
+
+
+class Upscale2dLayer(nn.Module):
+    def __init__(self, factor=2, gain=1):
+        super(Upscale2dLayer, self).__init__()
+        assert isinstance(factor, int) and factor >= 1
+        self.gain = gain
+        self.factor = factor
+
+    def forward(self, x):
+        return upscale2d(x, factor=self.factor, gain=self.gain)
+
+
+# Generator Synthesis Blocks
+# Each Block has two halfs
+# Upscaling (if its  the first half) by a factor of two and blurring
+#      - fused with convolution for the later layers.
+# Convolution (if its the first half, having the channels for the later layers)
+# Noise
+# Activation (LeakyReLU in the reference model)
+# Optionally Pixel norm (not used in the reference model)
+# Instance Norm (optional, but used in reference model)
+# The style modulation (i.e. setting the mean/st dev of the outputs after instance norm)
+
+# Two of these sequences form a block that typically has
+# out_channels = in_channels // 2 (in the earlier blocks, there are 512 input and 512 output channels)
+# output_resolution = input_resolution * 2
+# All of them are combined but the first two into a Module called Layer epilogue
+# First block (4 x 4 ) pixels doesnt have an input
+# The reesult of the first convolution is replaced by a trained constant.
+# This is called the InputBlock, the others GSynthesisBlock.
+# Nicer to do it the other way around where LayerEpilogue is the Layer and call conv from that
+
+class LayerEpilogue(nn.Module):
+    # Things to do at the end of each layer
+    def __init__(self, channels, dlatent_size, use_wscale, use_noise,
+                 use_pixel_norm, use_instance_norm, use_styles,
+                 activation_layer):
+        super(LayerEpilogue, self).__init__()
+        layers = []
+        if use_noise:
+            layers.append(('noise', NoiseLayer(channels)))
+        layers.append(('activation', activation_layer))
+        if use_pixel_norm:
+            layers.norm(('pixel_norm', PixelNormLayer()))
+        if use_instance_norm:
+            layers.append(('instance_norm', nn.InstanceNorm2d(channels)))
+        self.top_epi = nn.Sequential(OrderedDict(layers))
+        if use_styles:
+            self.style_mod = StyleModLayer(dlatent_size, channels, use_wscale=use_wscale)
+        else:
+            self.style_mod = None
+
+    def forward(self, x, dlatents_in_slice=None):
+        x = self.top_epi(x)
+        if self.style_mod is not None:
+            x = self.style_mod(x, dlatents_in_slice)
+        else:
+            assert dlatents_in_slice is None
+        return x
+
+
+class InputBlock(nn.Module):
+    def __init__(self, nf, dlatent_size, const_input_layer, gain, use_wscale,
+                 use_noise, use_pixel_norm, use_instance_norm,
+                 use_styles, activation_layer):
+        super(InputBlock, self).__init__()
+        self.const_input_layer = const_input_layer
+        self.nf = nf
+        if self.const_input_layer:
+            # called 'const' in tf
+            self.const = nn.Parameter(torch.ones(1, nf, 4, 4))
+            self.bias = nn.Parameter(torch.ones(nf))
+        else:
+            self.dense = LinearLayer(dlatent_size, nf*16, gain=gain/4, use_wscale=use_wscale)  # tweak gain to match offl implementation of prog GAN
+        self.epi1 = LayerEpilogue(nf, dlatent_size, use_wscale, use_noise,
+                                  use_pixel_norm, use_instance_norm,
+                                  use_styles, activation_layer)
+        self.conv = Conv2dLayer(nf, nf, 3, gain=gain, use_wscale=use_wscale)
+        self.epi2 = LayerEpilogue(nf, dlatent_size, use_wscale, use_pixel_norm,
+                                  use_instance_norm, use_styles, activation_layer)
+
+    def forward(self, dlatents_in_range):
+        batch_size = dlatents_in_range.size(0)
+        if self.const_input_layer:
+            x = self.const.expand(batch_size, -1, -1, -1)
+            x = x + self.bias.view(1, -1, 1, 1)
+        else:
+            x = self.dense(dlatents_in_range[:, 0]).view(batch_size, self.nf, 4, 4)
+        x = self.epi1(x, dlatents_in_range[:, 0])
+        x = self.conv(x)
+        x = self.epi2(x, dlatents_in_range[:, 1])
+        return x
