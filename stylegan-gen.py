@@ -140,3 +140,24 @@ class NoiseLayer(nn.Module):
             noise = self.noise
         x = x + self.weight.view(1, -1, 1, 1) * noise
         return x
+
+
+# Style Modification Layer
+# In the generator, this layer is used after each non-affine instance norm layer
+# The mean and variance is put back as an output of a linear layer that
+# takes the latent style vector as inputs
+# Adaptive Instance Norm (AdaIN)
+
+class StyleModLayer(nn.Module):
+    def __init__(self, latent_dim, channels, use_wscale):
+        super(StyleModLayer, self).__init__()
+        self.linear_layer = LinearLayer(latent_dim,
+                                        channels * 2,
+                                        gain=1.0, use_wscale=use_wscale)
+
+    def forward(self, x, latent):
+        style = self.linear_layer(latent)  # style => [batch_size, n_channels*2]
+        shape = [-1, 2, x.size(1)] + (x.dim() - 2) * [1]
+        style = style.view(shape)  # [batch_size, 2, n_channels, ...]
+        x = x * (style[:, 0] + 1.) + style[:, 1]
+        return x
