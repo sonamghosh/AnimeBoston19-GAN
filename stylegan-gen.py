@@ -67,7 +67,7 @@ class Conv2dLayer(nn.Module):
                  intermediate=None, upscale=False):
         super(Conv2dLayer, self).__init__()
         if upscale:
-            self.upscale = Upscale2d()
+            self.upscale = Upscale2dLayer()
         else:
             self.upscale = None
         he_std = gain * (in_channels * kernel_size ** 2) ** (-0.5)  # He init
@@ -230,6 +230,67 @@ class Upscale2dLayer(nn.Module):
 
     def forward(self, x):
         return upscale2d(x, factor=self.factor, gain=self.gain)
+
+###########################################################
+
+# Generator Mapping Module
+# First component is the mapping for the StyleGAN generator
+# the mapping is a 8 layer deep fc network MLP
+# Reference model uses Leaku Relus
+# We get a 18 channel (times 512 features) per image style matrix
+# all 18 channels will be the same
+
+# there is also a truncation module pulling the upper layers
+# latent inputs towards the mean, but it isn't activated as the main
+# is not provided in the pre-trained network.
+# One could runt he mapping for a while and derive the
+# truncation weights
+
+class G_mapping(nn.Sequential):
+    def __init__(self, nonlinearity='lrelu', use_wscale=True):
+        act, gain = {'relu', (torch.relu, np.sqrt(2)),
+                     'lrelu', (nn.LeakyReLU(negative_slope=0.2), np.sqrt(2))}[nonlinearity]
+        layers = [
+            ('pixel_norm', PixelNormLayer()),
+            ('dense0', LinearLayer(512, 512, gain=gain, lrmul=0.01, use_wscale=use_wscale)),
+            ('dense0_act', act),
+            ('dense1', LinearLayer(512, 512, gain=gain, lrmul=0.01, use_wscale=use_wscale)),
+            ('dense1_act', act),
+            ('dense2', LinearLayer(512, 512, gain=gain, lrmul=0.01, use_wscale=use_wscale)),
+            ('dense2_act', act),
+            ('dense3', LinearLayer(512, 512, gain=gain, lrmul=0.01, use_wscale=use_wscale)),
+            ('dense3_act', act),
+            ('dense4', LinearLayer(512, 512, gain=gain, lrmul=0.01, use_wscale=use_wscale)),
+            ('dense4_act', act),
+            ('dense5', LinearLayer(512, 512, gain=gain, lrmul=0.01, use_wscale=use_wscale)),
+            ('dense5_act', act),
+            ('dense6', LinearLayer(512, 512, gain=gain, lrmul=0.01, use_wscale=use_wscale)),
+            ('dense6_act', act),
+            ('dense7', LinearLayer(512, 512, gain=gain, lrmul=0.01, use_wscale=use_wscale)),
+            ('dense7_act', act),
+        ]
+        super(G_mapping, self).__init__(OrderedDict(layers))
+
+    def forward(self, x):
+        x = super().forward(x)
+        # Broadcast
+        x = x.unsqueeze(1).expand(-1, 18, -1)
+        return x
+
+
+class Truncation(nn.Module):
+    def __init__(self, avg_latent, max_layer=8, threshold=0.7):
+        super(Truncation, self).__init__()
+        self.max_layer = max_layer
+        self.threshold = threshold
+        self.register_buffer('avg_latent', avg_latent)
+
+    def forward(self, x):
+        assert x.dim() == 3
+        interp = torch.lerp(self.avg_latent, x, self.threshold)
+        do_trunc = (torch.arange(x.size(1)) < self.max_layer).view(1, -1, 1)
+        return torch.where(do_trunc, interp, x)
+
 
 
 # Generator Synthesis Blocks
@@ -427,3 +488,8 @@ class G_synthesis(nn.Module):
 
 def main():
     # Define the model
+    g_all = nn.Sequential(OrderedDict([
+        ('g_mapping', G_mapping()),
+        #('truncation', Truncation(avg_latent)),
+        ('g_synthesis', G_synthesis())
+    ]))
