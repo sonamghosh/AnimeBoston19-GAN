@@ -23,6 +23,7 @@ import pickle
 
 import numpy as np
 import os
+import fnmatch
 
 import torchvision
 import matplotlib.pyplot as plt
@@ -523,11 +524,35 @@ def weight_translate(k, w):
         elif w.dim() == 1:
             pass
         else:
-            assert w.dim() == 4:
+            assert w.dim() == 4
             w = w.permute(3, 2, 0, 1)
     return w
 
 
+def find_match(name, path):
+    for root, dirs, files in os.walk(path):
+        if name in files:
+            return os.path.join(root, name)
+
+def find_all(name, path):
+    result = []
+    for root, dirs, files in os.walk(path):
+        if name in files:
+            result.append(os.path.join(root, name))
+
+    return result
+
+def find_from_pattern(pattern, path):
+    result = []
+    for root, dirs, files in os.walk(path):
+        for name in files:
+            if fnmatch.fnmatch(name, pattern):
+                result.append(os.path.join(root, name))
+    return result
+
+
+#a = find_from_pattern('*.pkl', '/Users/sonamghosh/Downloads')
+#print(a)
 
 
 def main():
