@@ -24,6 +24,8 @@ import pickle
 import numpy as np
 import os
 
+import torchvision
+import matplotlib.pyplot as plt
 
 
 # Uncomment if using Jupyter Notebook
@@ -487,6 +489,45 @@ class G_synthesis(nn.Module):
                 x = m(x, dlatents_in[:, 2*i:2*i+2])
         rgb = self.torgb(x)
         return rgb
+
+
+
+# Utility Functions
+
+def key_translate(k):
+    k = k.lower().split('/')
+    if k[0] == 'g_synthesis':
+        if not k[1].startswith('torgb'):
+            k.insert(1, 'blocks')
+        k = '.'.join(k)
+        k = (k.replace('const.const', 'const').replace('const.bias', 'bias').replace('const.stylemod', 'epi1.style_mod.lin')
+             .replace('const.noise.weight', 'epi1.top_epi.noise.weight')
+             .replace('conv.stylemod', 'epi2.top_epi.noise.weight')
+             .replace('conv0_up.noise.weight', 'epi1.top_epi.noise.weight')
+             .replace('conv0_up.stylemod', 'epi1.style_mod.lin')
+             .replace('conv1.noise.weight', 'epi2.top_epi.noise.weight')
+             .replace('conv1.stylemod', 'epi2.style_mod.lin')
+             .replace('torgb_lod0', 'torgb')
+             )
+    else:
+        k = '.'.join(k)
+    return k
+
+
+
+def weight_translate(k, w):
+    k = key_translate(k)
+    if k.endswith('.weight'):
+        if w.dim() == 2:
+            w = w.t()
+        elif w.dim() == 1:
+            pass
+        else:
+            assert w.dim() == 4:
+            w = w.permute(3, 2, 0, 1)
+    return w
+
+
 
 
 def main():
