@@ -542,6 +542,8 @@ def find_all(name, path):
 
     return result
 
+import time
+
 def find_from_pattern(pattern, path):
     result = []
     for root, dirs, files in os.walk(path):
@@ -550,9 +552,25 @@ def find_from_pattern(pattern, path):
                 result.append(os.path.join(root, name))
     return result
 
+import re
+def alt_find():
+    matches = []
+    img_re = re.compile(r'.+\.(pkl)$', re.IGNORECASE)
+    for root, dirnames, filenames in os.walk('/Users/sonamghosh/Downloads'):
+        matches.extend(os.path.join(root, name) for name in filenames if img_re.match(name))
 
-#a = find_from_pattern('*.pkl', '/Users/sonamghosh/Downloads')
-#print(a)
+    return matches
+
+start = time.time()
+a = find_from_pattern('*.pkl', '/Users/sonamghosh/Downloads')
+print(a)
+end = time.time()
+print(end - start)  # 1.715 s
+
+start = time.time()
+b = alt_find()
+end = time.time()
+print(end - start)  # 1.372 s
 
 
 def main():
