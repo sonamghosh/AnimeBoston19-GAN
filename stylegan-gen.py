@@ -276,7 +276,7 @@ class G_mapping(nn.Sequential):
             ('dense6', LinearLayer(512, 512, gain=gain, lrmul=0.01, use_wscale=use_wscale)),
             ('dense6_act', act),
             ('dense7', LinearLayer(512, 512, gain=gain, lrmul=0.01, use_wscale=use_wscale)),
-            ('dense7_act', act),
+            ('dense7_act', act)
         ]
         super(G_mapping, self).__init__(OrderedDict(layers))
 
@@ -507,6 +507,7 @@ def key_translate(k):
         k = '.'.join(k)
         k = (k.replace('const.const', 'const').replace('const.bias', 'bias').replace('const.stylemod', 'epi1.style_mod.lin')
              .replace('const.noise.weight', 'epi1.top_epi.noise.weight')
+             .replace('conv.noise.weight', 'epi2.top_epi.noise.weight')
              .replace('conv.stylemod', 'epi2.top_epi.noise.weight')
              .replace('conv0_up.noise.weight', 'epi1.top_epi.noise.weight')
              .replace('conv0_up.stylemod', 'epi1.style_mod.lin')
