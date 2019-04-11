@@ -562,6 +562,15 @@ def alt_find():
 
     return matches
 
+def ask_user():
+    print("Do you want to load weights from file?")
+    response = ''
+    while response.lower() not in {"y", "n"}:
+        response = input("Please enter y for loading or n if this is done")
+    return response.lower() == "y"
+
+
+
 """
 start = time.time()
 a = find_from_pattern('*.pkl', '/Users/sonamghosh/Downloads')
@@ -583,9 +592,37 @@ def main():
         ('g_synthesis', G_synthesis())
     ]))
     # Get dnnlib from https://github.com/NVlabs/stylegan/tree/master/dnnlib
-    import dnnlib, dnnlib.tflib, collections
-    
+    resp = input('yes or no: \n')
+    if resp == 'y':
+        import dnnlib, dnnlib.tflib, collections
+        dnnlib.tflib.init_tf()
+        w_file = alt_find()[0]
+        weights = pickle.load(open(w_file, 'rb'))
+        # colocate_with in tensorflow is deprecated, change src to include new method
+        weights_pt = [OrderedDict([(k, torch.from_numpy(v.value().eval())) for k, v in w.trainables.items()]) for w in weights]
+        torch.save(weights_pt, './karras2019stylegan-ffhq-1024x1024.pt')
+        # Now for pytorch side
+        state_G, state_D, state_Gs = torch.load('./karras2019stylegan-ffhq-1024x1024.pt')
+        # Delete useless torgb filters
+        param_dict = {key_translate(k): weight_translate(k, v) for k, v in state_Gs.items() if 'torgb_lod' not in key_translate(k)}
 
+        sd_shapes = {k: v.shape for k, v in g_all.state_dict().items()}
+        param_shapes = {k: v.shape for k, v in param_dict.items()}
+
+        for k in list(sd_shapes)+list(param_shapes):
+            pds = param_shapes.get(k)
+            sds = sd_shapes.get(k)
+            if pds is None:
+                print("sd only", k, sds)
+            elif sds is None:
+                print("pd only", k, pds)
+            elif sds != pds:
+                print("mismatch", k, pds, sds)
+
+        g_all.load_state_dict(param_dict, strict=False)  # for blur kernels
+        torch.save(g_all.state_dict(), './karras2019stylegan-ffhq-1024x1024.for_g_all.pt')
+    else:
+        g_all.load_state_dict(torch.load('./karras2019stylegan-ffhq-1024x1024.for_g_all.pt'))
 
 if __name__ == "__main__":
     main()
