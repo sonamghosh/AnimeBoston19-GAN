@@ -49,6 +49,7 @@ class LinearLayer(nn.Module):
             self.w_mul = he_std * lrmul
         else:
             init_std = he_std / lrmul
+            self.w_mul = lrmul
         self.weight = torch.nn.Parameter(torch.randn(out_dim, in_dim) * init_std)
         if bias:
             self.bias = torch.nn.Parameter(torch.zeros(out_dim))
