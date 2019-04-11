@@ -42,7 +42,7 @@ class LinearLayer(nn.Module):
     def __init__(self, in_dim, out_dim, gain=2**(0.5), use_wscale=False,
                  lrmul=1, bias=True):
         super(LinearLayer, self).__init__()
-        he_std = gain * input_size**(-0.5)  # He init
+        he_std = gain * in_dim**(-0.5)  # He init
         # equalized learning rate and custom learning rate multiplierself.
         if use_wscale:
             init_std = 1.0 / lrmul
@@ -254,8 +254,8 @@ class Upscale2dLayer(nn.Module):
 
 class G_mapping(nn.Sequential):
     def __init__(self, nonlinearity='lrelu', use_wscale=True):
-        act, gain = {'relu', (torch.relu, np.sqrt(2)),
-                     'lrelu', (nn.LeakyReLU(negative_slope=0.2), np.sqrt(2))}[nonlinearity]
+        act, gain = {'relu': (torch.relu, np.sqrt(2)),
+                     'lrelu': (nn.LeakyReLU(negative_slope=0.2), np.sqrt(2))}[nonlinearity]
         layers = [
             ('pixel_norm', PixelNormLayer()),
             ('dense0', LinearLayer(512, 512, gain=gain, lrmul=0.01, use_wscale=use_wscale)),
@@ -365,7 +365,7 @@ class InputBlock(nn.Module):
                                   use_pixel_norm, use_instance_norm,
                                   use_styles, activation_layer)
         self.conv = Conv2dLayer(nf, nf, 3, gain=gain, use_wscale=use_wscale)
-        self.epi2 = LayerEpilogue(nf, dlatent_size, use_wscale, use_pixel_norm,
+        self.epi2 = LayerEpilogue(nf, dlatent_size, use_wscale, use_noise, use_pixel_norm,
                                   use_instance_norm, use_styles, activation_layer)
 
     def forward(self, dlatents_in_range):
@@ -468,6 +468,7 @@ class G_synthesis(nn.Module):
             if res == 2:
                 blocks.append((name,
                                InputBlock(channels, dlatent_size, const_input_layer,
+                                    gain, use_wscale,
                                     use_noise, use_pixel_norm, use_instance_norm,
                                     use_styles, act)))
             else:
@@ -561,6 +562,7 @@ def alt_find():
 
     return matches
 
+"""
 start = time.time()
 a = find_from_pattern('*.pkl', '/Users/sonamghosh/Downloads')
 print(a)
@@ -571,7 +573,7 @@ start = time.time()
 b = alt_find()
 end = time.time()
 print(end - start)  # 1.372 s
-
+"""
 
 def main():
     # Define the model
@@ -580,3 +582,10 @@ def main():
         #('truncation', Truncation(avg_latent)),
         ('g_synthesis', G_synthesis())
     ]))
+    # Get dnnlib from https://github.com/NVlabs/stylegan/tree/master/dnnlib
+    import dnnlib, dnnlib.tflib, collections
+    
+
+
+if __name__ == "__main__":
+    main()
