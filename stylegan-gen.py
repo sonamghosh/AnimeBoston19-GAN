@@ -108,6 +108,7 @@ class Conv2dLayer(nn.Module):
             # But quadruples the weight (average)...
             w = F.pad(w, (1, 1, 1, 1))
             w = w[:, :, 1:, 1:] + w[:, :, :-1, 1:] + w[:, :, 1:, :-1] + w[:, :, :-1, :-1]
+            x = F.conv_transpose2d(x, w, stride=2, padding=(w.size(-1)-1)//2)
             have_convolution = True
         elif self.upscale is not None:
             x = self.upscale(x)
@@ -642,6 +643,7 @@ def main():
 
         plt.figure(figsize=(15, 6))
         plt.imshow(imgs.permute(1, 2, 0).detach().numpy())
+        plt.show()
 
 if __name__ == "__main__":
     main()
