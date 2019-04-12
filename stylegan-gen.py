@@ -27,7 +27,8 @@ import fnmatch
 
 import torchvision
 import matplotlib.pyplot as plt
-
+import dnnlib
+import dnnlib.tflib
 
 # Uncomment if using Jupyter Notebook
 #import IPython
@@ -41,7 +42,7 @@ class LinearLayer(nn.Module):
     # Linear layer with equalized learning rate and custom learning rate multiplier
     def __init__(self, in_dim, out_dim, gain=2**(0.5), use_wscale=False,
                  lrmul=1, bias=True):
-        super(LinearLayer, self).__init__()
+        super().__init__()
         he_std = gain * in_dim**(-0.5)  # He init
         # equalized learning rate and custom learning rate multiplierself.
         if use_wscale:
@@ -72,7 +73,7 @@ class Conv2dLayer(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, gain=2**(0.5),
                  use_wscale=False, lrmul=1, bias=True,
                  intermediate=None, upscale=False):
-        super(Conv2dLayer, self).__init__()
+        super().__init__()
         if upscale:
             self.upscale = Upscale2dLayer()
         else:
@@ -135,7 +136,7 @@ class Conv2dLayer(nn.Module):
 class NoiseLayer(nn.Module):
     # Adds noise per pixel (const over channels) with per channel weight
     def __init__(self, channels):
-        super(NoiseLayer, self).__init__()
+        super().__init__()
         self.weight = nn.Parameter(torch.zeros(channels))
         self.noise = None
 
@@ -178,7 +179,7 @@ class StyleModLayer(nn.Module):
 
 class PixelNormLayer(nn.Module):
     def __init__(self, epsilon=1e-8):
-        super(PixelNormLayer, self).__init__()
+        super().__init__()
         self.epsilon = epsilon
 
     def forward(self, x):
@@ -232,7 +233,7 @@ def upscale2d(x, factor=2, gain=1):
 
 class Upscale2dLayer(nn.Module):
     def __init__(self, factor=2, gain=1):
-        super(Upscale2dLayer, self).__init__()
+        super().__init__()
         assert isinstance(factor, int) and factor >= 1
         self.gain = gain
         self.factor = factor
@@ -278,18 +279,18 @@ class G_mapping(nn.Sequential):
             ('dense7', LinearLayer(512, 512, gain=gain, lrmul=0.01, use_wscale=use_wscale)),
             ('dense7_act', act)
         ]
-        super(G_mapping, self).__init__(OrderedDict(layers))
+        super().__init__(OrderedDict(layers))
 
     def forward(self, x):
         x = super().forward(x)
         # Broadcast
-        x = x.unsqueeze(1).expand(-1, 18, -1)
+        x = x.unsqueeze(1).expand(-1, 16, -1)
         return x
 
 
 class Truncation(nn.Module):
     def __init__(self, avg_latent, max_layer=8, threshold=0.7):
-        super(Truncation, self).__init__()
+        super().__init__()
         self.max_layer = max_layer
         self.threshold = threshold
         self.register_buffer('avg_latent', avg_latent)
@@ -327,7 +328,7 @@ class LayerEpilogue(nn.Module):
     def __init__(self, channels, dlatent_size, use_wscale, use_noise,
                  use_pixel_norm, use_instance_norm, use_styles,
                  activation_layer):
-        super(LayerEpilogue, self).__init__()
+        super().__init__()
         layers = []
         if use_noise:
             layers.append(('noise', NoiseLayer(channels)))
@@ -355,7 +356,7 @@ class InputBlock(nn.Module):
     def __init__(self, nf, dlatent_size, const_input_layer, gain, use_wscale,
                  use_noise, use_pixel_norm, use_instance_norm,
                  use_styles, activation_layer):
-        super(InputBlock, self).__init__()
+        super().__init__()
         self.const_input_layer = const_input_layer
         self.nf = nf
         if self.const_input_layer:
@@ -389,7 +390,7 @@ class GSynthesisBlock(nn.Module):
                  gain, use_wscale, use_noise, use_pixel_norm,
                  use_instance_norm, use_styles, activation_layer):
         # 2 ** res x 2 ** res # res = 3..resolution_log2
-        super(GSynthesisBlock, self).__init__()
+        super().__init__()
         if blur_filter:
             blur = BlurLayer(blur_filter)
         else:
@@ -423,7 +424,7 @@ class GSynthesisBlock(nn.Module):
 # Implementing full training in PyTorch would be nice (dynamic graph)
 
 class G_synthesis(nn.Module):
-    def __init__(self, dlatent_size=512, num_channels=3, resolution=1024,
+    def __init__(self, dlatent_size=512, num_channels=3, resolution=512,#1024,
                  fmap_base=8192, fmap_decay=1.0, fmap_max=512,
                  use_styles=True, const_input_layer=True,
                  use_noise=True, randomize_noise=True,
@@ -451,7 +452,7 @@ class G_synthesis(nn.Module):
             blur_filter - Low pass filter to apply when resampling activation
 
         """
-        super(G_synthesis, self).__init__()
+        super().__init__()
 
         def nf(stage):
             return min(int(fmap_base / (2.0 ** (stage * fmap_decay))), fmap_max)
@@ -574,6 +575,11 @@ def ask_user():
     return response.lower() == "y"
 
 
+def print_network(pkl_file):
+    _G, _D, Gs = pickle.load(open(pkl_file, 'rb'))
+    Gs.print_layers()
+
+
 
 """
 start = time.time()
@@ -596,11 +602,12 @@ def main():
         ('g_synthesis', G_synthesis())
     ]))
     # Get dnnlib from https://github.com/NVlabs/stylegan/tree/master/dnnlib
-    resp = input('yes or no: \n')
+    resp = input('yes, no, or print network graph: \n')
     if resp == 'y':
-        import dnnlib, dnnlib.tflib, collections
         dnnlib.tflib.init_tf()
-        w_file = alt_find()[0]
+        w_file = alt_find()[0]  # anime face
+        #w_file = alt_find()[1]  # karras2019stylegan
+        print(w_file)
         weights = pickle.load(open(w_file, 'rb'))
         # colocate_with in tensorflow is deprecated, change src to include new method
         weights_pt = [OrderedDict([(k, torch.from_numpy(v.value().eval())) for k, v in w.trainables.items()]) for w in weights]
@@ -646,6 +653,12 @@ def main():
         plt.figure(figsize=(15, 6))
         plt.imshow(imgs.permute(1, 2, 0).detach().numpy())
         plt.show()
+
+    elif resp == 'p':
+        dnnlib.tflib.init_tf()
+        w_file = alt_find()[0]  # anime
+        #w_file = alt_find()[1]  # karras2019stylegan
+        print_network(w_file)
 
 if __name__ == "__main__":
     main()
